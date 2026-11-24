@@ -7,7 +7,8 @@ description: Use a user's Luka account API for social account diagnosis, topic a
 
 Use the bundled CLI to perform social-media work through the user's own Luka
 account and workspace. The API key determines the workspace; never pass a
-workspace ID.
+workspace ID. Visual-note work runs remotely in Luka and can select from the
+platform's curated visual-note Skill catalog.
 
 ## Setup
 
@@ -111,6 +112,35 @@ node scripts/luka-api.mjs images wait JOB_ID --output ./output/cover.png
 Use only the ratios returned by `images models`. Image content requires the same
 API key, so download it through the CLI rather than opening the content path
 directly.
+
+### Create a visual note with a platform Skill
+
+The hundreds of Luka visual-note Skills stay on the Luka platform. Do not try to
+install them separately or read their private instruction files. Discover and
+execute them through the catalog API:
+
+```bash
+node scripts/luka-api.mjs visual-notes recommend --query "独立开发者 AI 工作流"
+node scripts/luka-api.mjs visual-notes list --category 图文 --page-size 20
+node scripts/luka-api.mjs visual-notes get SKILL_ID
+```
+
+Use `mode=auto` when the catalog should choose, or select a specific Skill after
+the user approves the style. Visual-note generation consumes credits according
+to the Luka assistant run and generated images:
+
+```bash
+node scripts/luka-api.mjs visual-notes create \
+  --prompt "制作一套独立开发者 AI 内容工作流的图文笔记" \
+  --skill-id SKILL_ID --page-count 6 --confirm
+
+node scripts/luka-api.mjs visual-notes wait JOB_ID \
+  --output-dir ./output/visual-note
+```
+
+Use `visual-notes download JOB_ID --output-dir ./output/visual-note` to retry a
+download without regenerating. The output includes page images, `note.json`, and
+the platform-generated ZIP bundle when available.
 
 ### Plan content and monitor keywords
 
