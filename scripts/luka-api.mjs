@@ -33,6 +33,11 @@ Read-only:
   node scripts/luka-api.mjs images get JOB_ID
   node scripts/luka-api.mjs images wait JOB_ID [--output image.png]
   node scripts/luka-api.mjs images download JOB_ID --output image.png
+  node scripts/luka-api.mjs visual-notes list [--query TEXT] [--category NAME]
+  node scripts/luka-api.mjs visual-notes recommend --query TEXT
+  node scripts/luka-api.mjs visual-notes get SKILL_ID
+  node scripts/luka-api.mjs visual-notes wait JOB_ID [--output result.json]
+  node scripts/luka-api.mjs visual-notes download JOB_ID --output-dir ./output/note
 
 Paid or mutating (all require --confirm):
   node scripts/luka-api.mjs accounts connect ACCOUNT_URL [--platform xiaohongshu] --confirm
@@ -46,6 +51,8 @@ Paid or mutating (all require --confirm):
   node scripts/luka-api.mjs monitors delete MONITOR_ID --confirm
   node scripts/luka-api.mjs images create --prompt "..." --size 4:5 --confirm
   node scripts/luka-api.mjs images wait JOB_ID --output image.png
+  node scripts/luka-api.mjs visual-notes create --skill-id SKILL_ID --prompt "..." --confirm
+  node scripts/luka-api.mjs visual-notes create --prompt "..." --confirm
 
 Advanced:
   node scripts/luka-api.mjs request GET /accounts --query limit=20
@@ -193,7 +200,7 @@ function retryDelayMs(response, attempt) {
   return Math.min(1_000 * (2 ** attempt), MAX_RETRY_DELAY_MS);
 }
 
-async function fetchOnce(config, method, url, body, timeoutMs) {
+async function fetchOnce(config, method, url, body, timeoutMs, extraHeaders = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -204,6 +211,7 @@ async function fetchOnce(config, method, url, body, timeoutMs) {
         Accept: 'application/json',
         Authorization: `Bearer ${config.apiKey}`,
         ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+        ...extraHeaders,
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
@@ -230,7 +238,7 @@ async function request(config, method, apiPath, input = {}) {
   let lastError;
 
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    const response = await fetchOnce(config, methodUpper, url, input.body, timeoutMs);
+    const response = await fetchOnce(config, methodUpper, url, input.body, timeoutMs, input.headers || {});
     const text = await response.text();
     const parsed = parseResponseJson(text, response.status);
     if (response.ok) {
@@ -330,6 +338,14 @@ function requireMutationConfirmation(label) {
   throw new CliError(
     'confirmation_required',
     `${label} changes Luka data. Confirm the exact target with the user and rerun with --confirm.`,
+  );
+}
+
+function requireCreditAction(label, message) {
+  if (option('confirm')) return;
+  throw new CliError(
+    'confirmation_required',
+    `${label} ${message} State the expected consumption to the user and rerun with --confirm only after explicit approval.`,
   );
 }
 
@@ -495,6 +511,165 @@ async function waitForImage(config, jobId) {
   }
 
   throw new CliError('image_wait_timeout', `Image job did not finish within ${timeoutMs}ms.`, latest);
+}
+
+function visualNoteJobFromResponse(response) {
+  return dataOf(response)?.visualNoteJob || dataOf(response);
+}
+
+async function waitForVisualNote(config, jobId) {
+  const timeoutMs = parsePositiveInteger(option('timeout-ms'), DEFAULT_TOPIC_WAIT_MS, 'timeout-ms');
+  const pollMs = parsePositiveInteger(option('poll-ms'), DEFAULT_POLL_MS, 'poll-ms');
+  const deadline = Date.now() + timeoutMs;
+  let latest = null;
+
+  while (Date.now() < deadline) {
+    const response = await request(config, 'GET', `/visual-note/jobs/${encodeURIComponent(jobId)}`);
+    latest = visualNoteJobFromResponse(response);
+    if (['succeeded', 'failed', 'cancelled', 'waiting_input'].includes(latest?.status)) {
+      if (latest.status === 'waiting_input') {
+        throw new CliError(
+          'visual_note_requires_input',
+          'The visual-note Skill needs more information before it can generate.',
+          latest,
+        );
+      }
+      if (latest.status !== 'succeeded') {
+        throw new CliError(
+          latest.errorCode || `visual_note_${latest.status}`,
+          latest.errorMessage || `Visual-note job ended with ${latest.status}.`,
+          latest,
+        );
+      }
+      return latest;
+    }
+    await sleep(pollMs);
+  }
+
+  throw new CliError('visual_note_wait_timeout', `Visual-note job did not finish within ${timeoutMs}ms.`, latest);
+}
+
+function extensionForMimeType(mimeType) {
+  if (mimeType === 'image/jpeg') return 'jpg';
+  if (mimeType === 'image/webp') return 'webp';
+  return 'png';
+}
+
+async function downloadVisualNote(config, job, outputDir) {
+  const directory = path.resolve(String(outputDir));
+  await mkdir(directory, { recursive: true });
+  const delivery = job.delivery;
+  if (!delivery) throw new CliError('visual_note_not_ready', 'Visual-note delivery is not available.', job);
+
+  const downloadedPages = [];
+  for (const page of delivery.pages || []) {
+    if (!page.contentUrl || page.status !== 'ready') continue;
+    const url = new URL(page.contentUrl, config.serviceOrigin).toString();
+    const content = await requestBinary(
+      config,
+      url,
+      parsePositiveInteger(option('timeout-ms'), DEFAULT_TIMEOUT_MS, 'timeout-ms'),
+    );
+    const fileName = `page-${String(page.pageNumber).padStart(2, '0')}.${extensionForMimeType(content.contentType)}`;
+    const outputPath = path.join(directory, fileName);
+    await writeFile(outputPath, content.bytes);
+    downloadedPages.push({
+      pageNumber: page.pageNumber,
+      outputPath,
+      bytesWritten: content.bytes.byteLength,
+      contentType: content.contentType,
+    });
+  }
+
+  const notePath = path.join(directory, 'note.json');
+  await writeFile(notePath, `${JSON.stringify({
+    jobId: job.id,
+    skill: job.skill,
+    note: delivery.note,
+    pages: delivery.pages,
+    quality: delivery.quality,
+  }, null, 2)}\n`, 'utf8');
+
+  let bundle = null;
+  if (delivery.bundle?.canRequest) {
+    const bundleResponse = await request(config, 'POST', `/visual-note/jobs/${encodeURIComponent(job.id)}/bundles`, {
+      body: {
+        revision: delivery.revision,
+        allowPartial: delivery.status !== 'complete',
+      },
+    });
+    const descriptor = dataOf(bundleResponse)?.bundle || dataOf(bundleResponse);
+    if (descriptor?.downloadUrl) {
+      const content = await requestBinary(
+        config,
+        new URL(descriptor.downloadUrl, config.serviceOrigin).toString(),
+        parsePositiveInteger(option('timeout-ms'), DEFAULT_TIMEOUT_MS, 'timeout-ms'),
+      );
+      const safeName = String(descriptor.fileName || 'visual-note.zip').replace(/[\\/:*?"<>|]+/g, '-');
+      const bundlePath = path.join(directory, safeName);
+      await writeFile(bundlePath, content.bytes);
+      bundle = {
+        outputPath: bundlePath,
+        bytesWritten: content.bytes.byteLength,
+        contentType: content.contentType,
+        fileName: descriptor.fileName,
+        partial: descriptor.partial,
+      };
+    }
+  }
+
+  return {
+    jobId: job.id,
+    outputDirectory: directory,
+    pages: downloadedPages,
+    notePath,
+    bundle,
+  };
+}
+
+function compactVisualNote(job) {
+  return {
+    id: job.id,
+    status: job.status,
+    skill: job.skill ? { id: job.skill.id, title: job.skill.title } : null,
+    resultText: job.resultText,
+    errorCode: job.errorCode,
+    errorMessage: job.errorMessage,
+    delivery: job.delivery ? {
+      revision: job.delivery.revision,
+      status: job.delivery.status,
+      expectedCount: job.delivery.expectedCount,
+      generatedCount: job.delivery.generatedCount,
+      note: job.delivery.note,
+      quality: job.delivery.quality,
+      bundle: job.delivery.bundle,
+      issues: job.delivery.issues,
+      pages: job.delivery.pages.map((page) => ({
+        id: page.id,
+        pageNumber: page.pageNumber,
+        name: page.name,
+        role: page.role,
+        status: page.status,
+        contentUrl: page.contentUrl,
+      })),
+    } : null,
+  };
+}
+
+async function emitVisualNoteJob(command, job, extra = {}) {
+  let outputPath = null;
+  if (option('output')) {
+    outputPath = path.resolve(String(option('output')));
+    await mkdir(path.dirname(outputPath), { recursive: true });
+    await writeFile(outputPath, `${JSON.stringify(job, null, 2)}\n`, 'utf8');
+  }
+  process.stdout.write(`${JSON.stringify({
+    ok: true,
+    command,
+    data: compactVisualNote(job),
+    ...extra,
+    ...(outputPath ? { outputPath } : {}),
+  }, null, 2)}\n`);
 }
 
 async function dispatch(config) {
@@ -711,6 +886,89 @@ async function dispatch(config) {
       const jobId = requirePosition(positionals, 2, 'image job ID');
       const result = await waitForImage(config, jobId);
       process.stdout.write(`${JSON.stringify({ ok: true, command: 'images wait', data: result }, null, 2)}\n`);
+      return { handled: true };
+    }
+  }
+
+  if (command === 'visual-notes') {
+    if (subcommand === 'list') {
+      const query = [];
+      const queryText = option('query');
+      if (typeof queryText === 'string' && queryText.trim()) query.push(`q=${queryText.trim()}`);
+      if (option('category')) query.push(`category=${option('category')}`);
+      if (option('scene')) query.push(`scene=${option('scene')}`);
+      if (option('page')) query.push(`page=${option('page')}`);
+      if (option('page-size')) query.push(`pageSize=${option('page-size')}`);
+      if (option('sort')) query.push(`sort=${option('sort')}`);
+      const response = await request(config, 'GET', '/visual-note/skills', { query });
+      emitSuccess('visual-notes list', response);
+      return { handled: true };
+    }
+    if (subcommand === 'recommend') {
+      const query = option('query');
+      if (!query) throw new CliError('invalid_arguments', 'visual-notes recommend requires --query.');
+      const response = await request(config, 'GET', '/visual-note/skills/recommendations', {
+        query: [`q=${query}`, `limit=${option('limit') || 5}`],
+      });
+      emitSuccess('visual-notes recommend', response);
+      return { handled: true };
+    }
+    if (subcommand === 'get') {
+      const skillId = requirePosition(positionals, 2, 'visual-note Skill ID');
+      const response = await request(config, 'GET', `/visual-note/skills/${encodeURIComponent(skillId)}`);
+      emitSuccess('visual-notes get', response);
+      return { handled: true };
+    }
+    if (subcommand === 'create') {
+      requireCreditAction(
+        'Visual-note generation',
+        'runs on your Luka workspace and consumes credits according to the assistant run and generated images.',
+      );
+      const data = await readJsonInput();
+      const skillId = option('skill-id') || option('skillName') || null;
+      const prompt = option('prompt');
+      const body = data || {
+        mode: skillId ? 'selected' : 'auto',
+        skillId,
+        prompt,
+        pageCount: option('page-count') ? Number(option('page-count')) : undefined,
+        platform: option('platform') || undefined,
+        imageModel: option('image-model') || undefined,
+        imageAspectRatio: option('image-aspect-ratio') || undefined,
+        clientRequestID: option('client-request-id') || undefined,
+      };
+      if (!body?.prompt) throw new CliError('invalid_arguments', 'visual-notes create requires --prompt or --data.');
+      const response = await request(config, 'POST', '/visual-note/jobs', {
+        body,
+        headers: option('client-request-id') ? { 'Idempotency-Key': option('client-request-id') } : {},
+      });
+      emitSuccess('visual-notes create', response);
+      return { handled: true };
+    }
+    if (subcommand === 'wait') {
+      const jobId = requirePosition(positionals, 2, 'visual-note job ID');
+      const job = await waitForVisualNote(config, jobId);
+      const download = option('output-dir')
+        ? await downloadVisualNote(config, job, option('output-dir'))
+        : null;
+      await emitVisualNoteJob('visual-notes wait', job, download ? { download } : {});
+      return { handled: true };
+    }
+    if (subcommand === 'download') {
+      const jobId = requirePosition(positionals, 2, 'visual-note job ID');
+      const outputDir = option('output-dir');
+      if (!outputDir) throw new CliError('invalid_arguments', 'visual-notes download requires --output-dir.');
+      const response = await request(config, 'GET', `/visual-note/jobs/${encodeURIComponent(jobId)}`);
+      const job = visualNoteJobFromResponse(response);
+      if (job.status !== 'succeeded') {
+        throw new CliError('visual_note_not_ready', `Visual-note job is ${job.status}.`, job);
+      }
+      const download = await downloadVisualNote(config, job, outputDir);
+      process.stdout.write(`${JSON.stringify({
+        ok: true,
+        command: 'visual-notes download',
+        data: download,
+      }, null, 2)}\n`);
       return { handled: true };
     }
   }
