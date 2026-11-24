@@ -262,6 +262,102 @@ node scripts/luka-api.mjs images wait JOB_ID --output ./output/image.png
 node scripts/luka-api.mjs images download JOB_ID --output ./output/image.png
 ```
 
+## Visual-note Skills and remote execution
+
+The installed Luka Skill is a gateway to the platform's visual-note Skill
+catalog. The catalog and execution remain remote; the public API does not expose
+Skill prompts, scripts, or internal directories.
+
+### `GET /visual-note/skills`
+
+Optional query:
+
+- `q`
+- `category`
+- `scene`
+- `page`
+- `pageSize`
+- `sort=latest|popular|title`
+
+Returns paginated Skill metadata, including `skillName`, title, description,
+cover, category, scene, page policy, keywords, and usage count.
+
+### `GET /visual-note/skills/recommendations?q=...`
+
+Returns ranked visual-note Skills for a content brief. This is read-only and
+does not generate anything.
+
+### `GET /visual-note/skills/:id`
+
+Returns one visual-note Skill.
+
+### `POST /visual-note/jobs`
+
+Selected Skill:
+
+```json
+{
+  "mode": "selected",
+  "skillId": "healing-space-xhs-note",
+  "prompt": "为一间治愈系香氛店制作六页小红书图文笔记",
+  "pageCount": 6,
+  "platform": "xiaohongshu",
+  "imageAspectRatio": "3:4"
+}
+```
+
+Automatic selection:
+
+```json
+{
+  "mode": "auto",
+  "prompt": "为独立开发者制作一套 AI 工作流小红书图文，优先实操清单风格",
+  "pageCount": 6,
+  "platform": "xiaohongshu"
+}
+```
+
+The API creates an asynchronous Luka assistant run. It returns HTTP 202 with a
+visual-note job. The execution uses the platform's existing Skill runtime,
+visual-note generator, image provider, QA, artifact storage, and assistant-run
+billing.
+
+Send `Idempotency-Key` or `clientRequestID` when retrying from a client that may
+lose the first response.
+
+### `GET /visual-note/jobs/:id`
+
+Returns:
+
+- `status`: queued, running, waiting_input, succeeded, failed, or cancelled.
+- Selected Skill metadata.
+- Result text and failure information.
+- Delivery revision, note copy, hashtags, page copy, page status, quality, and
+  content URLs.
+
+Do not create another job while a valid job is running. Poll this endpoint.
+
+### Page and bundle download
+
+- `GET /visual-note/jobs/:id/pages/:pageID/content`
+- `POST /visual-note/jobs/:id/bundles`
+- `GET /visual-note/jobs/:id/bundles/:artifactID/content?revision=...`
+
+The CLI `visual-notes download` handles all three and writes page images,
+`note.json`, and the ZIP bundle.
+
+CLI examples:
+
+```bash
+node scripts/luka-api.mjs visual-notes recommend --query "独立开发者 AI 工作流"
+node scripts/luka-api.mjs visual-notes create --prompt "..." --skill-id SKILL_ID --confirm
+node scripts/luka-api.mjs visual-notes wait JOB_ID --output-dir ./output/visual-note
+```
+
+Visual-note generation consumes credits through the existing Luka assistant run
+and image billing. It is not free merely because it is invoked from an external
+Agent.
+
 ## Errors and retries
 
 Common API error codes:
