@@ -120,6 +120,12 @@ function option(name, fallback = undefined) {
   return value === undefined ? fallback : value;
 }
 
+function firstOption(name, fallback = undefined) {
+  const value = option(name);
+  if (Array.isArray(value)) return value[0] ?? fallback;
+  return value ?? fallback;
+}
+
 function requirePosition(positionals, index, label) {
   const value = String(positionals[index] || '').trim();
   if (!value) throw new CliError('invalid_arguments', `${label} is required.`);
@@ -893,8 +899,8 @@ async function dispatch(config) {
   if (command === 'visual-notes') {
     if (subcommand === 'list') {
       const query = [];
-      const queryText = option('query');
-      if (typeof queryText === 'string' && queryText.trim()) query.push(`q=${queryText.trim()}`);
+      const queryText = String(firstOption('query', '')).trim();
+      if (queryText) query.push(`q=${queryText}`);
       if (option('category')) query.push(`category=${option('category')}`);
       if (option('scene')) query.push(`scene=${option('scene')}`);
       if (option('page')) query.push(`page=${option('page')}`);
@@ -905,7 +911,7 @@ async function dispatch(config) {
       return { handled: true };
     }
     if (subcommand === 'recommend') {
-      const query = option('query');
+      const query = String(firstOption('query', '')).trim();
       if (!query) throw new CliError('invalid_arguments', 'visual-notes recommend requires --query.');
       const response = await request(config, 'GET', '/visual-note/skills/recommendations', {
         query: [`q=${query}`, `limit=${option('limit') || 5}`],
