@@ -9,6 +9,16 @@ const DEFAULT_IMAGE_WAIT_MS = 360_000;
 const DEFAULT_TOPIC_WAIT_MS = 900_000;
 const DEFAULT_POLL_MS = 3_000;
 const MAX_RETRY_DELAY_MS = 15_000;
+const MAX_REFERENCE_IMAGES = 8;
+const MAX_REFERENCE_IMAGE_BYTES = 10 * 1024 * 1024;
+const MAX_REFERENCE_TOTAL_BYTES = MAX_REFERENCE_IMAGE_BYTES * 2;
+const MAX_VISUAL_NOTE_REQUEST_BYTES = 28 * 1024 * 1024;
+const REFERENCE_IMAGE_MIME_TYPES = {
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.png': 'image/png',
+  '.webp': 'image/webp',
+};
 
 const HELP = `Luka Social Ops API client
 
@@ -51,7 +61,7 @@ Paid or mutating (all require --confirm):
   node scripts/luka-api.mjs monitors delete MONITOR_ID --confirm
   node scripts/luka-api.mjs images create --prompt "..." --size 4:5 --confirm
   node scripts/luka-api.mjs images wait JOB_ID --output image.png
-  node scripts/luka-api.mjs visual-notes create --skill-id SKILL_ID --prompt "..." --confirm
+  node scripts/luka-api.mjs visual-notes create --skill-id SKILL_ID --prompt "..." [--reference PHOTO]... --confirm
   node scripts/luka-api.mjs visual-notes create --prompt "..." --confirm
 
 Advanced:
@@ -69,13 +79,14 @@ class CliError extends Error {
 }
 
 const BOOLEAN_OPTIONS = new Set(['confirm', 'full', 'help', 'pretty']);
-const REPEATED_OPTIONS = new Set(['query', 'keyword']);
+const REPEATED_OPTIONS = new Set(['query', 'keyword', 'reference']);
 
 function parseArgs(argv) {
   const positionals = [];
   const options = {
     query: [],
     keyword: [],
+    reference: [],
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -328,6 +339,56 @@ async function readJsonInput() {
   }
   if (rawData !== undefined) return parseResponseJson(String(rawData), 0);
   return undefined;
+}
+
+async function readReferenceImages(paths, role = 'subject') {
+  if (!Array.isArray(paths) || !paths.length) return undefined;
+  if (paths.length > MAX_REFERENCE_IMAGES) {
+    throw new CliError(
+      'invalid_arguments',
+      `Use at most ${MAX_REFERENCE_IMAGES} --reference images.`,
+    );
+  }
+  if (!['subject', 'style', 'layout', 'person'].includes(role)) {
+    throw new CliError(
+      'invalid_arguments',
+      '--reference-role must be one of: subject, style, layout, person.',
+    );
+  }
+  let totalBytes = 0;
+  const references = [];
+  for (const rawPath of paths) {
+    const filePath = path.resolve(String(rawPath));
+    const extension = path.extname(filePath).toLowerCase();
+    const mimeType = REFERENCE_IMAGE_MIME_TYPES[extension];
+    if (!mimeType) {
+      throw new CliError(
+        'invalid_arguments',
+        `Reference image must be PNG, JPEG, or WebP: ${filePath}`,
+      );
+    }
+    const bytes = await readFile(filePath);
+    if (bytes.length > MAX_REFERENCE_IMAGE_BYTES) {
+      throw new CliError(
+        'invalid_arguments',
+        `Reference image exceeds the 10 MB limit: ${filePath}`,
+      );
+    }
+    totalBytes += bytes.length;
+    if (totalBytes > MAX_REFERENCE_TOTAL_BYTES) {
+      throw new CliError(
+        'invalid_arguments',
+        `Reference images exceed the ${Math.floor(MAX_REFERENCE_TOTAL_BYTES / 1024 / 1024)} MB total limit.`,
+      );
+    }
+    references.push({
+      data: bytes.toString('base64'),
+      fileName: path.basename(filePath),
+      mimeType,
+      role,
+    });
+  }
+  return references;
 }
 
 function requireConfirmation(cost, label) {
@@ -933,6 +994,16 @@ async function dispatch(config) {
       const data = await readJsonInput();
       const skillId = option('skill-id') || option('skillName') || null;
       const prompt = option('prompt');
+      const referenceImages = await readReferenceImages(
+        option('reference'),
+        firstOption('reference-role', 'subject'),
+      );
+      if (data && referenceImages) {
+        throw new CliError(
+          'invalid_arguments',
+          'Use either --data with inline referenceImages, or --reference files, not both.',
+        );
+      }
       const body = data || {
         mode: skillId ? 'selected' : 'auto',
         skillId,
@@ -942,8 +1013,16 @@ async function dispatch(config) {
         imageModel: option('image-model') || undefined,
         imageAspectRatio: option('image-aspect-ratio') || undefined,
         clientRequestID: option('client-request-id') || undefined,
+        referenceImages,
       };
       if (!body?.prompt) throw new CliError('invalid_arguments', 'visual-notes create requires --prompt or --data.');
+      if (referenceImages) body.referenceImages = referenceImages;
+      if (Buffer.byteLength(JSON.stringify(body), 'utf8') > MAX_VISUAL_NOTE_REQUEST_BYTES) {
+        throw new CliError(
+          'invalid_arguments',
+          'Visual-note request is too large. Reduce reference image size or count.',
+        );
+      }
       const response = await request(config, 'POST', '/visual-note/jobs', {
         body,
         headers: option('client-request-id') ? { 'Idempotency-Key': option('client-request-id') } : {},
