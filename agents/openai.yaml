@@ -1,5 +1,5 @@
 interface:
   display_name: "噜咔社媒运营"
-  short_description: "通过个人噜咔 API 完成账号分析、选题、图片和关键词监控"
+  short_description: "通过个人噜咔 API 查询社媒数据，完成账号分析、选题、关键词监控与图文生成"
   brand_color: "#0066FF"
-  default_prompt: "使用 $luka-social-ops 诊断我的社媒账号并给出下一步运营建议。"
+  default_prompt: "使用 $luka-social-ops 告诉我可调用的社媒数据能力，并帮我完成账号诊断。"

@@ -1,6 +1,6 @@
 ---
 name: luka-social-ops
-description: Use a user's Luka account API for social account diagnosis, topic analysis, content planning, image generation, and keyword monitoring. Use when work should execute through Luka; do not use for publishing content or editing the Luka codebase.
+description: Use a user's Luka account to discover supported social-media data capabilities and run account diagnosis, content or competitor research, topic analysis, content planning, keyword monitoring, image generation, and visual-note generation. Use when work should execute through Luka; do not use for publishing content or editing the Luka codebase.
 ---
 
 # Luka Social Ops
@@ -29,6 +29,41 @@ Use the returned billing balance and capabilities to decide what can run. If the
 key is missing, guide the user through key creation instead of using browser
 session cookies or automation.
 
+## Social Data Capability Questions
+
+When the user asks what social-media data can be called, what platforms or
+interfaces are supported, what can be scraped or retrieved, or whether a
+specific kind of account, content, ranking, comment, audience, live-stream, or
+commercial data is available, treat it as a capability-discovery request.
+
+Answer with the complete capability map, not only account diagnosis, topic
+analysis, content planning, keyword monitoring, or image generation. Read
+[references/data-capabilities.md](references/data-capabilities.md) and cover:
+
+- The 16 supported platforms and their capability differences.
+- Search; account profiles and statistics; content lists and details; content
+  metrics; comments and replies; hot lists and trending content; hashtags and
+  topics; followers or following data when exposed; live rooms and danmaku;
+  music or sound data; creator and analytics data; and the platform-specific
+  commerce, location, company, job, article, subtitle, or caption data that is
+  actually available.
+- The input needed to begin: a platform plus a keyword, account URL or ID,
+  content URL or ID, or topic/hashtag as appropriate.
+- That field coverage, sorting, pagination, historical depth, and authorization
+  vary by platform and API scope. Never promise a field solely because another
+  platform exposes it.
+
+When the hosting runtime exposes a social-data tool registry, use its discovery
+tool (`assistant_find_tools` or `socialpulse_find_tools`) to verify exact
+current availability before execution. Discovery results describe callable
+tools; they are not social data themselves. In a standalone installation that
+only has the bundled CLI, explain that the broader social-data catalog is
+provided by the Luka host and do not invent CLI commands or direct endpoints.
+
+For a capability overview, first present the full data-family catalog and
+platform coverage, then invite the user to choose a concrete query. Do not
+reduce the answer to a short table of paid Luka workflows.
+
 ## Operating Rules
 
 - Read-only operations may run directly.
@@ -45,11 +80,16 @@ session cookies or automation.
   ID, ask the user before creating another job.
 - Do not publish content, operate EveryPublish, or automate a social platform.
   This skill has no publishing capability.
+- Do not claim access to private messages, private account back-office data, or
+  any field outside the platform's public or authorized data surface. Report a
+  genuine scope or platform limitation instead of fabricating a replacement.
 - Do not print or expose Authorization headers, API keys, or raw environment
   values. The CLI reports API errors as JSON without the secret.
 
 Read [references/api-v1.md](references/api-v1.md) when you need endpoint fields,
-supported values, error handling, or recovery details.
+supported values, error handling, or recovery details. Read
+[references/data-capabilities.md](references/data-capabilities.md) for a
+user-facing answer about the broader social-data catalog.
 
 ## Common Workflows
 
