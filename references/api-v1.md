@@ -302,7 +302,15 @@ Selected Skill:
   "prompt": "为一间治愈系香氛店制作六页小红书图文笔记",
   "pageCount": 6,
   "platform": "xiaohongshu",
-  "imageAspectRatio": "3:4"
+  "imageAspectRatio": "3:4",
+  "referenceImages": [
+    {
+      "fileName": "product.jpg",
+      "mimeType": "image/jpeg",
+      "role": "subject",
+      "data": "<base64 or data URL>"
+    }
+  ]
 }
 ```
 
@@ -321,6 +329,13 @@ The API creates an asynchronous Luka assistant run. It returns HTTP 202 with a
 visual-note job. The execution uses the platform's existing Skill runtime,
 visual-note generator, image provider, QA, artifact storage, and assistant-run
 billing.
+
+`referenceImages` is optional and accepts 1-8 PNG, JPEG, or WebP images. Each
+image may be up to 10 MB and the combined size may be up to 20 MB. `data`
+accepts standard base64 or a `data:image/...;base64,...` URL. Supported roles
+are `subject` (default), `style`, `layout`, and `person`. The reference files
+are uploaded into the authenticated workspace and passed to each page as image
+inputs; they are not copied into the public Skill directory.
 
 Send `Idempotency-Key` or `clientRequestID` when retrying from a client that may
 lose the first response.
@@ -351,6 +366,7 @@ CLI examples:
 ```bash
 node scripts/luka-api.mjs visual-notes recommend --query "独立开发者 AI 工作流"
 node scripts/luka-api.mjs visual-notes create --prompt "..." --skill-id SKILL_ID --confirm
+node scripts/luka-api.mjs visual-notes create --prompt "..." --reference ./photo.jpg --confirm
 node scripts/luka-api.mjs visual-notes wait JOB_ID --output-dir ./output/visual-note
 ```
 
